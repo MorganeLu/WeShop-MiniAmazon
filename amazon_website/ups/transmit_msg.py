@@ -21,13 +21,16 @@ def receive_command(socket):
     while True:
         try:
             ch = socket.recv(1)
+            if not ch:
+                return None
             msg += ch
             msg_len, new_pos = _DecodeVarint32(msg, 0)
             if new_pos != 0:
                 break
         except Exception as e:
-            print("Receive error\n")
-            return None
+            pass
+            # print("Receive error\n")
+            # return None
         
     message = socket.recv(msg_len)
     res = UtoACommands()

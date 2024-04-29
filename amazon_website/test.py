@@ -43,10 +43,15 @@ def handle_worldReady(seqnum_manager, world_socket, ups_socket, recvMsg):
             product_ids = [row[0] for row in rows]
             product_counts = [row[1] for row in rows]
 
-            query = "SELECT amazon_products.description FROM amazon_products WHERE amazon_products.id = %s"
-            cursor.execute(query, [tuple(product_ids)])
-            rows = cursor.fetchall()
-            descriptions = [row[0] for row in rows]
+            descriptions = []
+            for id in product_ids:
+                query = "SELECT amazon_products.description FROM amazon_products WHERE amazon_products.id = %s"
+                cursor.execute(query, [id])
+                row = cursor.fetchone()
+                if row:
+                    descriptions.append(row[0])
+            print("descriptions: ", descriptions)
+            print("type: ", type(descriptions[0]))
 
             things_list = []
             for i in range(len(product_ids)):
@@ -190,9 +195,12 @@ def handle_frontTopack(world_socket, info, seqnum_manager):
         world.sendTopack(world_socket=world_socket, whnum=int(info['whnum']), things_list=things_list, shipid=info['orderid'], seqnum=seqnum)
      
 
-def handle_upsArrived(world_socket, ups_socket, cmd, seqnum_manager):
+def handle_upsArrived(world_socket, ups_socket, cmd, seqnum_manager, ups_requests):
     for single in cmd.arrived:
         ups.sendAcks(ups_socket, seqnum=single.seq_num)
+        if single.seq_num in ups_requests:
+            return
+        ups_requests.append(single.seq_num)
 
         seqnum = seqnum_manager.check_sequence()
         seqnum_manager.add_sequence(seqnum)
@@ -214,9 +222,12 @@ def handle_upsArrived(world_socket, ups_socket, cmd, seqnum_manager):
             print("Resend in put on truck")
             world.sendPutOnTruck(world_socket, 1, single.truck_id, single.ship_id, seqnum=seqnum)
 
-def handle_upsDelivered(ups_socket, cmd):
+def handle_upsDelivered(ups_socket, cmd, ups_requests):
     for single in cmd.delivered:
         ups.sendAcks(ups_socket, seqnum=single.seq_num)
+        if single.seq_num in ups_requests:
+            return
+        ups_requests.append(single.seq_num)
 
         # change status in db
         order_id = single.ship_id
@@ -231,9 +242,12 @@ def handle_upsDelivered(ups_socket, cmd):
                 connection.commit()
 
 
-def handle_upsDest(ups_socket, cmd):
+def handle_upsDest(ups_socket, cmd, ups_requests):
     for single in cmd.dest:
         ups.sendAcks(ups_socket, seqnum=single.seq_num)
+        if single.seq_num in ups_requests:
+            return
+        ups_requests.append(single.seq_num)
 
         order_id = single.ship_id
         sql_query = "SELECT * FROM amazon_orders WHERE id = %s LIMIT 1"
@@ -246,9 +260,12 @@ def handle_upsDest(ups_socket, cmd):
             connection.commit()
 
 
-def handle_upsError(ups_socket, cmd):
+def handle_upsError(ups_socket, cmd, ups_requests):
     for single in cmd.error:
         ups.sendAcks(ups_socket, seqnum=single.seq_num)
+        if single.seq_num in ups_requests:
+            return
+        ups_requests.append(single.seq_num)
 
 
 class SequenceManager:
@@ -275,6 +292,7 @@ class SequenceManager:
             else:
                 print(f"Sequence {ack} not found")
 
+
 if __name__ == "__main__":
     # front
     front_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -295,6 +313,7 @@ if __name__ == "__main__":
 
     # Sequence Number Pool
     seqnum_manager = SequenceManager()
+    ups_requests = []
 
     connection = psycopg2.connect(
         host='db',
@@ -369,7 +388,7 @@ if __name__ == "__main__":
                     # continue
                 elif recvMsg.error:
                     # error
-                    handle_worldError(seqnum_manager, world_socket, recvMsg)
+                    handle_worldError(world_socket, recvMsg)
                     # request_handler_thread = threading.Thread(target=handle_worldError, args=(seqnum_manager, world_socket, recvMsg))
                     # request_handler_thread.start()
                     # continue
@@ -400,22 +419,22 @@ if __name__ == "__main__":
                 print("UPS cmd:", cmd)
 
                 if cmd.arrived: # ask world to load
-                    handle_upsArrived(world_socket, ups_socket, cmd, seqnum_manager)
+                    handle_upsArrived(world_socket, ups_socket, cmd, seqnum_manager, ups_requests)
                     # request_handler_thread = threading.Thread(target=handle_upsArrived, args=(world_socket, ups_socket, cmd, seqnum_manager))
                     # request_handler_thread.start()
                     # continue
                 elif cmd.delivered:
-                    handle_upsDelivered(ups_socket, cmd)
+                    handle_upsDelivered(ups_socket, cmd, ups_requests)
                     # request_handler_thread = threading.Thread(target=handle_upsDelivered, args=(ups_socket, cmd))
                     # request_handler_thread.start()
                     # continue
                 elif cmd.dest:
-                    handle_upsDest(ups_socket, cmd)
+                    handle_upsDest(ups_socket, cmd, ups_requests)
                     # request_handler_thread = threading.Thread(target=handle_upsDest, args=(ups_socket, cmd))
                     # request_handler_thread.start()
                     # continue
                 elif cmd.error:
-                    handle_upsError(ups_socket, cmd)
+                    handle_upsError(ups_socket, cmd, ups_requests)
                     # request_handler_thread = threading.Thread(target=handle_upsError, args=(ups_socket, cmd))
                     # request_handler_thread.start()
                     # continue
